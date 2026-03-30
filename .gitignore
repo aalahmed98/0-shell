@@ -1,1 +1,22 @@
+# Rust
 /target
+**/*.rs.bk
+**/*.rlib
+
+# Debug symbols (Windows)
+*.pdb
+
+# IDE / editors
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local secrets / env
+.env
+.env.*
+!.env.example

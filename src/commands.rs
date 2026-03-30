@@ -7,7 +7,16 @@ use std::time::SystemTime;
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-//note: what if user does echo "hello world'
+/// Resolve a path relative to the shell's tracked working directory or as absolute.
+pub fn resolve_path(arg: &str, current_dir: &Path) -> PathBuf {
+    let p = Path::new(arg);
+    if p.is_absolute() {
+        PathBuf::from(arg)
+    } else {
+        current_dir.join(arg)
+    }
+}
+
 pub fn echo(args: &[&str]) {
     if args.is_empty() {
         println!();
@@ -27,7 +36,7 @@ pub fn echo(args: &[&str]) {
     println!("{}", output.join(" "));
 }
 
-pub fn cd(args: &[&str], current_dir: &PathBuf) -> Option<PathBuf> {
+pub fn cd(args: &[&str], current_dir: &Path) -> Option<PathBuf> {
     let target = if args.is_empty() {
         env::var("HOME").ok().map(PathBuf::from).unwrap_or_else(|| {
             #[cfg(unix)]
@@ -36,27 +45,11 @@ pub fn cd(args: &[&str], current_dir: &PathBuf) -> Option<PathBuf> {
             { env::current_dir().unwrap_or_else(|_| PathBuf::from(".")) }
         })
     } else {
-        let path = args[0];
-        #[cfg(unix)]
-        {
-            if path.starts_with('/') {
-                PathBuf::from(path)
-            } else {
-                current_dir.join(path)
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            if path.starts_with('/') || path.starts_with('\\') {
-                PathBuf::from(path)
-            } else {
-                current_dir.join(path)
-            }
-        }
+        resolve_path(args[0], current_dir)
     };
     
     match env::set_current_dir(&target) {
-        Ok(_) => Some(target),
+        Ok(_) => Some(env::current_dir().unwrap_or(target)),
         Err(e) => {
             eprintln!("cd: {}: {}", target.display(), e);
             None
@@ -64,17 +57,23 @@ pub fn cd(args: &[&str], current_dir: &PathBuf) -> Option<PathBuf> {
     }
 }
 
-/// Print working directory
-pub fn pwd(current_dir: &PathBuf) {
-    println!("{}", current_dir.display());
+/// Print working directory (prefers the OS current directory after `cd`).
+pub fn pwd(current_dir: &Path) {
+    match env::current_dir() {
+        Ok(p) => println!("{}", p.display()),
+        Err(e) => {
+            eprintln!("pwd: {}", e);
+            println!("{}", current_dir.display());
+        }
+    }
 }
 
 /// List directory contents
-pub fn ls(args: &[&str], current_dir: &PathBuf) {
+pub fn ls(args: &[&str], current_dir: &Path) {
     let mut show_long = false;
     let mut show_all = false;
     let mut show_type = false;
-    let mut target_dir = current_dir.clone();
+    let mut target_dir = current_dir.to_path_buf();
     
     // Parse flags
     let mut paths_start = 0;
@@ -95,26 +94,8 @@ pub fn ls(args: &[&str], current_dir: &PathBuf) {
         }
     }
     
-    // Get target directory
     if paths_start < args.len() {
-        let path = args[paths_start];
-        #[cfg(unix)]
-        {
-            if path.starts_with('/') {
-                target_dir = PathBuf::from(path);
-            } else {
-                target_dir = current_dir.join(path);
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            // On Windows, handle both / and \ as path separators
-            if path.starts_with('/') || path.starts_with('\\') {
-                target_dir = PathBuf::from(path);
-            } else {
-                target_dir = current_dir.join(path);
-            }
-        }
+        target_dir = resolve_path(args[paths_start], current_dir);
     }
     
     // List directory
@@ -126,9 +107,7 @@ pub fn ls(args: &[&str], current_dir: &PathBuf) {
             
             // Filter hidden files if -a not specified
             if !show_all {
-                items.retain(|e| {
-                    e.file_name().to_string_lossy().starts_with('.') == false
-                });
+                items.retain(|e| !e.file_name().to_string_lossy().starts_with('.'));
             }
             
             // Sort alphabetically
@@ -186,7 +165,6 @@ pub fn ls(args: &[&str], current_dir: &PathBuf) {
     }
 }
 
-//note: review whatever the fuck this is
 fn print_entry_long(entry: &fs::DirEntry, metadata: &fs::Metadata, show_type: bool) {
     // Permissions
     #[cfg(unix)]
@@ -263,22 +241,18 @@ fn print_entry_long(entry: &fs::DirEntry, metadata: &fs::Metadata, show_type: bo
         println!("{}", name_str);
     }
 }
-//note: review whatever the fuck this is
 #[cfg(unix)]
 fn file_size_blocks(metadata: &fs::Metadata) -> u64 {
-    (metadata.size() + 511) / 512
+    metadata.size().div_ceil(512)
 }
-//note: review whatever the fuck this is
 #[cfg(not(unix))]
 fn file_size_blocks(metadata: &fs::Metadata) -> u64 {
-    (metadata.len() + 511) / 512
+    metadata.len().div_ceil(512)
 }
-//note: review whatever the fuck this is
 #[cfg(unix)]
 fn is_executable(metadata: &fs::Metadata) -> bool {
     metadata.permissions().mode() & 0o111 != 0
 }
-//note: review whatever the fuck this is
 #[cfg(not(unix))]
 fn is_executable(_metadata: &fs::Metadata) -> bool {
     false
@@ -303,11 +277,11 @@ fn format_permissions(mode: u32, is_dir: bool) -> String {
 }
 
 fn is_leap_year(year: u64) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
 
 /// Cat command - display file contents
-pub fn cat(args: &[&str], current_dir: &PathBuf) {
+pub fn cat(args: &[&str], current_dir: &Path) {
     if args.is_empty() {
         // Read from stdin
         let mut buffer = String::new();
@@ -323,29 +297,12 @@ pub fn cat(args: &[&str], current_dir: &PathBuf) {
     }
     
     for arg in args {
-        let file_path = {
-            #[cfg(unix)]
-            {
-                if arg.starts_with('/') {
-                    PathBuf::from(arg)
-                } else {
-                    current_dir.join(arg)
-                }
-            }
-            #[cfg(not(unix))]
-            {
-                if arg.starts_with('/') || arg.starts_with('\\') {
-                    PathBuf::from(arg)
-                } else {
-                    current_dir.join(arg)
-                }
-            }
-        };
-        
+        let file_path = resolve_path(arg, current_dir);
+
         match fs::File::open(&file_path) {
             Ok(mut file) => {
                 let mut contents = String::new();
-                if let Ok(_) = file.read_to_string(&mut contents) {
+                if file.read_to_string(&mut contents).is_ok() {
                     print!("{}", contents);
                 } else {
                     eprintln!("cat: {}: Error reading file", file_path.display());
@@ -359,58 +316,23 @@ pub fn cat(args: &[&str], current_dir: &PathBuf) {
 }
 
 /// Copy command
-pub fn cp(args: &[&str], current_dir: &PathBuf) {
+pub fn cp(args: &[&str], current_dir: &Path) {
     if args.len() < 2 {
         eprintln!("cp: missing file operand");
         return;
     }
-    
-    let sources: Vec<_> = args[..args.len()-1].iter().collect();
-    let dest = args[args.len()-1];
+
+    let sources: Vec<_> = args[..args.len() - 1].iter().collect();
+    let dest = args[args.len() - 1];
     let sources_len = sources.len();
-    
-    let dest_path = {
-        #[cfg(unix)]
-        {
-            if dest.starts_with('/') {
-                PathBuf::from(dest)
-            } else {
-                current_dir.join(dest)
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            if dest.starts_with('/') || dest.starts_with('\\') {
-                PathBuf::from(dest)
-            } else {
-                current_dir.join(dest)
-            }
-        }
-    };
-    
-    // Check if destination is a directory
+
+    let dest_path = resolve_path(dest, current_dir);
+
     let dest_is_dir = dest_path.is_dir();
-    
+
     for source in sources {
-        let source_path = {
-            #[cfg(unix)]
-            {
-                if source.starts_with('/') {
-                    PathBuf::from(source)
-                } else {
-                    current_dir.join(source)
-                }
-            }
-            #[cfg(not(unix))]
-            {
-                if source.starts_with('/') || source.starts_with('\\') {
-                    PathBuf::from(source)
-                } else {
-                    current_dir.join(source)
-                }
-            }
-        };
-        
+        let source_path = resolve_path(source, current_dir);
+
         let final_dest = if dest_is_dir {
             dest_path.join(source_path.file_name().unwrap_or_else(|| source.as_ref()))
         } else {
@@ -420,7 +342,7 @@ pub fn cp(args: &[&str], current_dir: &PathBuf) {
             }
             dest_path.clone()
         };
-        
+
         match copy_recursive(&source_path, &final_dest) {
             Ok(_) => {}
             Err(e) => {
@@ -446,7 +368,7 @@ fn copy_recursive(source: &Path, dest: &Path) -> io::Result<()> {
 }
 
 /// Remove command
-pub fn rm(args: &[&str], current_dir: &PathBuf) {
+pub fn rm(args: &[&str], current_dir: &Path) {
     if args.is_empty() {
         eprintln!("rm: missing operand");
         return;
@@ -469,12 +391,8 @@ pub fn rm(args: &[&str], current_dir: &PathBuf) {
     }
     
     for arg in &args[paths_start..] {
-        let path = if arg.starts_with('/') {
-            PathBuf::from(arg)
-        } else {
-            current_dir.join(arg)
-        };
-        
+        let path = resolve_path(arg, current_dir);
+
         if path.is_dir() {
             if recursive {
                 match fs::remove_dir_all(&path) {
@@ -498,7 +416,7 @@ pub fn rm(args: &[&str], current_dir: &PathBuf) {
 }
 
 /// Move/rename command
-pub fn mv(args: &[&str], current_dir: &PathBuf) {
+pub fn mv(args: &[&str], current_dir: &Path) {
     if args.len() < 2 {
         eprintln!("mv: missing file operand");
         return;
@@ -508,48 +426,13 @@ pub fn mv(args: &[&str], current_dir: &PathBuf) {
     let dest = args[args.len()-1];
     let sources_len = sources.len();
     
-    let dest_path = {
-        #[cfg(unix)]
-        {
-            if dest.starts_with('/') {
-                PathBuf::from(dest)
-            } else {
-                current_dir.join(dest)
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            if dest.starts_with('/') || dest.starts_with('\\') {
-                PathBuf::from(dest)
-            } else {
-                current_dir.join(dest)
-            }
-        }
-    };
-    
-    // Check if destination is a directory
+    let dest_path = resolve_path(dest, current_dir);
+
     let dest_is_dir = dest_path.is_dir();
-    
+
     for source in sources {
-        let source_path = {
-            #[cfg(unix)]
-            {
-                if source.starts_with('/') {
-                    PathBuf::from(source)
-                } else {
-                    current_dir.join(source)
-                }
-            }
-            #[cfg(not(unix))]
-            {
-                if source.starts_with('/') || source.starts_with('\\') {
-                    PathBuf::from(source)
-                } else {
-                    current_dir.join(source)
-                }
-            }
-        };
-        
+        let source_path = resolve_path(source, current_dir);
+
         let final_dest = if dest_is_dir {
             dest_path.join(source_path.file_name().unwrap_or_else(|| source.as_ref()))
         } else {
@@ -559,7 +442,7 @@ pub fn mv(args: &[&str], current_dir: &PathBuf) {
             }
             dest_path.clone()
         };
-        
+
         match fs::rename(&source_path, &final_dest) {
             Ok(_) => {}
             Err(e) => {
@@ -570,32 +453,15 @@ pub fn mv(args: &[&str], current_dir: &PathBuf) {
 }
 
 /// Make directory command
-pub fn mkdir(args: &[&str], current_dir: &PathBuf) {
+pub fn mkdir(args: &[&str], current_dir: &Path) {
     if args.is_empty() {
         eprintln!("mkdir: missing operand");
         return;
     }
     
     for arg in args {
-        let path = {
-            #[cfg(unix)]
-            {
-                if arg.starts_with('/') {
-                    PathBuf::from(arg)
-                } else {
-                    current_dir.join(arg)
-                }
-            }
-            #[cfg(not(unix))]
-            {
-                if arg.starts_with('/') || arg.starts_with('\\') {
-                    PathBuf::from(arg)
-                } else {
-                    current_dir.join(arg)
-                }
-            }
-        };
-        
+        let path = resolve_path(arg, current_dir);
+
         match fs::create_dir_all(&path) {
             Ok(_) => {}
             Err(e) => {

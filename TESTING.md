@@ -56,26 +56,6 @@ You can test basic functionality on Windows, but Unix-specific features won't wo
 
 Note: File permissions, UID/GID, and some path handling will be different on Windows.
 
-## Option 3: Quick Test Script
-
-Create a test script to automate testing:
-
-```bash
-#!/bin/bash
-# test_shell.sh
-
-SHELL="./target/release/zero-shell"
-
-echo "Testing 0-Shell..."
-echo "=================="
-
-# Test basic commands
-echo "pwd" | $SHELL
-echo "ls" | $SHELL
-echo "echo hello world" | $SHELL
-echo "exit" | $SHELL
-```
-
 ## What to Test
 
 - ✅ Basic commands: `pwd`, `ls`, `echo`, `cd`
